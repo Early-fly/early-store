@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+    // Admin role is provisioned manually by the project owner in Firestore Console.
+    function admin() {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    match /users/{uid} {
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.resource.data.role == 'customer';
+      allow read: if signedIn() && (request.auth.uid == uid || admin());
+      allow update: if signedIn() && (
+        (request.auth.uid == uid
+          && request.resource.data.role == resource.data.role)
+        || admin()
+      );
+      allow delete: if admin();
+    }
+
+    match /products/{id} {
+      allow read: if (resource.data.isPublished == true) || admin();
+      allow create, update, delete: if admin();
+    }
+
+    match /storeSettings/{id} {
+      allow read: if id == 'main';
+      allow write: if admin();
+    }
+
+    match /orders/{id} {
+      allow read: if admin() || (signedIn() && resource.data.customerId == request.auth.uid);
+      // Spark-only checkout: customer can submit an order, but cannot edit or delete it later.
+      // Admin must manually confirm stock and payment before processing.
+      allow create: if signedIn()
+        && request.resource.data.customerId == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'orderCode','customerId','customerName','customerPhone','orderType',
+          'deliveryAddress','latitude','longitude','pickupTime','deliveryNote',
+          'subtotal','shippingCost','total','paymentMethod','paymentStatus',
+          'paymentReference','orderStatus','trackingUrl','items','createdAt','updatedAt'
+        ])
+        && request.resource.data.orderType in ['pickup','delivery']
+        && request.resource.data.paymentMethod in ['cash','transfer','qris']
+        && request.resource.data.orderStatus == 'Menunggu Konfirmasi'
+        && request.resource.data.paymentStatus in ['PENDING_CASH','MENUNGGU_VERIFIKASI']
+        && request.resource.data.items is list
+        && request.resource.data.items.size() > 0
+        && request.resource.data.items.size() <= 30
+        && request.resource.data.total is number
+        && request.resource.data.total >= 0
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if admin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
